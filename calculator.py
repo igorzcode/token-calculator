@@ -1,41 +1,57 @@
 """
-Advanced Token & Cost Estimator for Claude and Gemini (2025 API rates)
+Improved Token & Cost Estimator for Claude and Gemini
+(using heuristic-based token estimation: character‑based or word‑based)
 
-Estimates cost based on both input (prompt) AND expected output.
-Assumes output token count is estimated as a ratio of prompt tokens.
+Important: This is only an estimate. Actual token counts may differ.
 """
 
 import json
+import math
 from prompt_toolkit.shortcuts import checkboxlist_dialog, input_dialog, message_dialog
 
-# --- Pricing (USD per 1M tokens) ---
+# --- Pricing (USD per 1M tokens) for input and output ---
 PRICING = {
     "claude": {"input_per_m": 3.00, "output_per_m": 15.00},
     "gemini": {"input_per_m": 1.25, "output_per_m": 10.00},
 }
 
-# USD → EUR conversion rate — adjust as needed
+# USD → EUR conversion rate (adjust to current rate)
 USD_TO_EUR = 0.92
 
-def count_tokens(text: str) -> int:
-    """Very rough token estimation: assume ~1 token per 0.75 words."""
+def estimate_tokens_by_chars(text: str) -> int:
+    """Estimate tokens based on character count. Approx 1 token ≈ 4 chars (English)."""
+    chars = len(text)
+    return max(1, math.ceil(chars / 4))
+
+def estimate_tokens_by_words(text: str) -> int:
+    """Estimate tokens based on word count. Approx 1 token ≈ 0.75 word."""
     words = len(text.split())
-    tokens = int(words / 0.75)
-    return tokens
+    # token ≈ words / 0.75  → token = words * (1 / 0.75) ≈ words * 1.333
+    return max(1, int(words * 1.333))
 
-def estimate_cost(tokens: int, model: str, output_tokens: int = 0):
-    """Estimate cost in EUR, for input + output tokens."""
-    pricing = PRICING.get(model)
-    if pricing is None:
+def deduce_output_tokens(prompt_tokens: int) -> int:
+    """
+    Heuristic to guess output length:
+      - Very short prompts → maybe longer output → 2× prompt_tokens
+      - Medium → 1× prompt_tokens
+      - Long prompts → shorter relative output → 0.5× prompt_tokens
+    """
+    if prompt_tokens < 50:
+        return prompt_tokens * 2
+    elif prompt_tokens <= 500:
+        return prompt_tokens
+    else:
+        return int(prompt_tokens * 0.5)
+
+def calculate_cost(tokens_input: int, tokens_output: int, model: str):
+    """Calculate estimated cost in EUR for given token counts."""
+    price = PRICING.get(model)
+    if price is None:
         return 0.0
-    cost_usd = (tokens / 1_000_000) * pricing["input_per_m"]
-    cost_usd += (output_tokens / 1_000_000) * pricing["output_per_m"]
+    cost_usd = (tokens_input / 1_000_000) * price["input_per_m"]
+    cost_usd += (tokens_output / 1_000_000) * price["output_per_m"]
     cost_eur = cost_usd * USD_TO_EUR
-    return round(cost_eur, 6)
-
-def save_last(data: dict):
-    with open("last_estimate.json", "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    return float(f"{cost_eur:.8f}")
 
 def main():
     models = checkboxlist_dialog(
@@ -44,7 +60,7 @@ def main():
         values=[("claude", "Claude"), ("gemini", "Gemini")]
     ).run()
     if not models:
-        message_dialog(title="Error", text="No model selected — exiting.").run()
+        message_dialog(title="No model selected", text="Exiting.").run()
         return
 
     prompt_text = input_dialog(
@@ -55,50 +71,48 @@ def main():
         message_dialog(title="Error", text="Prompt is empty — exiting.").run()
         return
 
-    # Ask user for expected output size (in tokens) or ratio
-    resp = input_dialog(
-        title="Expected Response Size",
-        text=(
-            "Enter expected OUTPUT token count (integer),\n"
-            "or leave blank to assume output = prompt tokens."
-        )
-    ).run()
+    # Estimate tokens by both chars and words
+    tokens_chars = estimate_tokens_by_chars(prompt_text)
+    tokens_words = estimate_tokens_by_words(prompt_text)
+    # Choose which estimate to use (you could allow user choice, here use average)
+    prompt_tokens = int((tokens_chars + tokens_words) / 2)
 
-    try:
-        if resp and resp.strip():
-            output_tokens = int(resp.strip())
-        else:
-            # default: assume output tokens ≈ prompt tokens
-            output_tokens = None
-    except ValueError:
-        output_tokens = None
+    # Deduce output tokens
+    output_tokens = deduce_output_tokens(prompt_tokens)
 
     results = {}
     for m in models:
-        input_tokens = count_tokens(prompt_text)
-        out_tokens = output_tokens if output_tokens is not None else input_tokens
-        cost = estimate_cost(input_tokens, m, out_tokens)
+        cost = calculate_cost(prompt_tokens, output_tokens, m)
         results[m] = {
-            "input_tokens": input_tokens,
-            "output_tokens": out_tokens,
+            "input_tokens_estimate": prompt_tokens,
+            "output_tokens_estimate": output_tokens,
             "estimated_cost_eur": cost
         }
 
-    display = ""
+    # Build display text
+    display = (
+        "Token estimation method: average of char-based and word-based heuristics\n\n"
+    )
     for m, r in results.items():
         display += (
             f"{m.title()}:\n"
-            f"  Input Tokens: {r['input_tokens']}\n"
-            f"  Output Tokens: {r['output_tokens']}\n"
-            f"  Estimated Cost (EUR): €{r['estimated_cost_eur']}\n\n"
+            f"  Estimated Input Tokens: {r['input_tokens_estimate']}\n"
+            f"  Estimated Output Tokens: {r['output_tokens_estimate']}\n"
+            f"  Estimated Total Cost (EUR): €{r['estimated_cost_eur']}\n\n"
         )
+    display += "⚠️ Note: This is only an estimate. Actual token counts and costs may differ."
 
-    message_dialog(title="Estimated Cost", text=display.strip()).run()
-    save_last({
-        "models": models,
-        "prompt": prompt_text,
-        "results": results
-    })
+    message_dialog(title="Estimated Cost (Heuristic)", text=display).run()
+
+    # Optionally save results
+    with open("last_estimate.json", "w", encoding="utf-8") as f:
+        json.dump({
+            "models": models,
+            "prompt": prompt_text,
+            "input_tokens": prompt_tokens,
+            "output_tokens": output_tokens,
+            "results": results
+        }, f, indent=2)
 
 if __name__ == "__main__":
     main()
