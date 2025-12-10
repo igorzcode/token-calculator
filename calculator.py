@@ -3,19 +3,20 @@ Retro-Styled Coding Project Token & Cost Estimator for Claude and Gemini
 
 Features:
 - Automatic iteration estimation based on prompt length & coding keywords
-- Input/output token estimation with realistic multipliers
+- Slight randomness added to iterations
+- Input/output token estimation includes prompt quality factor
 - Retro dark gray background with muted olive green text
-- Master prompt input box: gray text, truncated instead of scrolling
+- Prompt input box matches background and uses muted olive green text
 - Saves last calculation to last_estimate.json
 """
 
 import json
 import math
+import random
 from prompt_toolkit import print_formatted_text, prompt
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.styles import Style
 from prompt_toolkit.shortcuts import checkboxlist_dialog
-from prompt_toolkit.key_binding import KeyBindings
 
 # --- Pricing ---
 PRICING = {
@@ -48,7 +49,7 @@ retro_style = Style.from_dict({
     "button.focused": "bg:#9aa65e #2e2e2e bold",
     "checkbox": "#9aa65e",
     "checkbox.focused": "bg:#9aa65e #2e2e2e bold",
-    "input.text": "bg:#2e2e2e #c0c0c0",  # gray text for input
+    "input.text": "bg:#2e2e2e #9aa65e",  # same background, muted olive green text
 })
 
 # --- Token estimation functions ---
@@ -65,6 +66,9 @@ def estimate_input_tokens(prompt_text: str) -> int:
     return int((tokens_chars + tokens_words) / 2)
 
 def deduce_iterations(prompt_text: str, prompt_tokens: int) -> int:
+    """
+    Base iterations from prompt length + coding keyword hits, with small randomness.
+    """
     prompt_lower = prompt_text.lower()
     if prompt_tokens < 50:
         base_iterations = 2
@@ -72,17 +76,31 @@ def deduce_iterations(prompt_text: str, prompt_tokens: int) -> int:
         base_iterations = 5
     else:
         base_iterations = 15
-    keyword_hits = sum(1 for kw in CODING_KEYWORDS if kw in prompt_lower)
-    return max(1, base_iterations + keyword_hits)
 
-def estimate_output_tokens_per_iteration(prompt_tokens: int) -> int:
+    keyword_hits = sum(1 for kw in CODING_KEYWORDS if kw in prompt_lower)
+    estimated_iterations = base_iterations + keyword_hits
+
+    # Add ±10% randomness
+    random_factor = random.uniform(0.9, 1.1)
+    return max(1, int(estimated_iterations * random_factor))
+
+def estimate_output_tokens_per_iteration(prompt_text: str, prompt_tokens: int) -> int:
+    """
+    Estimate output tokens per iteration, adjusted by prompt 'quality':
+    Higher keyword density → more output tokens per iteration
+    """
+    keyword_hits = sum(1 for kw in CODING_KEYWORDS if kw in prompt_text.lower())
+    quality_factor = 1 + (keyword_hits / max(1, len(prompt_text.split())))
+    
+    # Base multiplier
     if prompt_tokens < 50:
         multiplier = 10
     elif prompt_tokens <= 200:
         multiplier = 8
     else:
         multiplier = 5
-    return int(prompt_tokens * multiplier)
+
+    return int(prompt_tokens * multiplier * quality_factor)
 
 def calculate_cost(tokens_input: int, tokens_output: int, model: str) -> float:
     price = PRICING.get(model)
@@ -109,18 +127,11 @@ def main():
         print_formatted_text(FormattedText([("class:dialog.body", "No model selected. Exiting.\n")]), style=retro_style)
         return
 
-    # Master prompt input: gray text and truncate input
-    bindings = KeyBindings()
-    # Disable multi-line, just truncate
-    def handle_enter(event):
-        event.app.exit(result=event.app.current_buffer.text)
-    bindings.add("enter")(handle_enter)
-
+    # Master prompt input: muted olive green text, same background
     prompt_text = prompt(
         "Enter your master coding prompt: ",
         style=retro_style,
-        key_bindings=bindings,
-        multiline=False,         # truncate instead of wrapping
+        multiline=False,
         wrap_lines=False
     )
 
@@ -131,9 +142,9 @@ def main():
     # Token estimation
     input_tokens = estimate_input_tokens(prompt_text)
     iterations = deduce_iterations(prompt_text, input_tokens)
-    output_tokens_per_iter = estimate_output_tokens_per_iteration(input_tokens)
+    output_tokens_per_iter = estimate_output_tokens_per_iteration(prompt_text, input_tokens)
     total_output_tokens = output_tokens_per_iter * iterations
-    total_input_tokens = input_tokens * iterations  # assume CLI prompts similar size
+    total_input_tokens = input_tokens * iterations
 
     # Calculate costs
     results = {}
@@ -151,7 +162,7 @@ def main():
     # Prepare display
     display_lines = []
     display_lines.append("⚠️ Estimated Total Coding Session Cost")
-    display_lines.append("Heuristic: iterations & output tokens deduced from prompt length & keywords.\n")
+    display_lines.append("Heuristic: iterations & output tokens deduced from prompt length, keyword density, and quality.\n")
     for m, r in results.items():
         display_lines.append(f"{m.title()}:")
         display_lines.append(f"  Estimated Iterations: {r['estimated_iterations']}")
@@ -174,4 +185,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
