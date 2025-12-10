@@ -6,7 +6,7 @@ Features:
 - Slight randomness added to iterations
 - Input/output token estimation includes prompt quality factor
 - Retro dark gray background with muted olive green text
-- Prompt input box matches background and uses muted olive green text
+- Prompt input box background matches UI background, text is muted olive green
 - Saves last calculation to last_estimate.json
 """
 
@@ -49,7 +49,8 @@ retro_style = Style.from_dict({
     "button.focused": "bg:#9aa65e #2e2e2e bold",
     "checkbox": "#9aa65e",
     "checkbox.focused": "bg:#9aa65e #2e2e2e bold",
-    "input.text": "bg:#2e2e2e #9aa65e",  # same background, muted olive green text
+    "prompt": "bg:#2e2e2e #9aa65e",           # prompt label
+    "input-field": "bg:#2e2e2e #9aa65e",       # input text area
 })
 
 # --- Token estimation functions ---
@@ -66,9 +67,6 @@ def estimate_input_tokens(prompt_text: str) -> int:
     return int((tokens_chars + tokens_words) / 2)
 
 def deduce_iterations(prompt_text: str, prompt_tokens: int) -> int:
-    """
-    Base iterations from prompt length + coding keyword hits, with small randomness.
-    """
     prompt_lower = prompt_text.lower()
     if prompt_tokens < 50:
         base_iterations = 2
@@ -85,14 +83,9 @@ def deduce_iterations(prompt_text: str, prompt_tokens: int) -> int:
     return max(1, int(estimated_iterations * random_factor))
 
 def estimate_output_tokens_per_iteration(prompt_text: str, prompt_tokens: int) -> int:
-    """
-    Estimate output tokens per iteration, adjusted by prompt 'quality':
-    Higher keyword density → more output tokens per iteration
-    """
     keyword_hits = sum(1 for kw in CODING_KEYWORDS if kw in prompt_text.lower())
     quality_factor = 1 + (keyword_hits / max(1, len(prompt_text.split())))
     
-    # Base multiplier
     if prompt_tokens < 50:
         multiplier = 10
     elif prompt_tokens <= 200:
@@ -127,9 +120,9 @@ def main():
         print_formatted_text(FormattedText([("class:dialog.body", "No model selected. Exiting.\n")]), style=retro_style)
         return
 
-    # Master prompt input: muted olive green text, same background
+    # Prompt input: background same as UI, text muted olive green
     prompt_text = prompt(
-        "Enter your master coding prompt: ",
+        [("class:prompt", "Enter your master coding prompt: ")],
         style=retro_style,
         multiline=False,
         wrap_lines=False
