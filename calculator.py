@@ -1,152 +1,105 @@
 """
-Claude and Gemini Token & Cost Calculator
-Author: Your Name
-Date: 2025-12-10
+Advanced Token & Cost Estimator for Claude and Gemini (2025 API rates)
 
-This script estimates the token usage and cost for Claude and Gemini models
-based on user-provided prompts and euro-per-token rates.
-
-Features:
-- Step-by-step TUI using prompt_toolkit
-- Multi-line prompt input
-- Approximate token counting per model
-- Cost estimation
-- Optional: estimate tokens for the final response
-- Saves last calculation to a local file
+Estimates cost based on both input (prompt) AND expected output.
+Assumes output token count is estimated as a ratio of prompt tokens.
 """
 
 import json
-from prompt_toolkit import prompt
 from prompt_toolkit.shortcuts import checkboxlist_dialog, input_dialog, message_dialog
 
-# ---------------------------
-# Token Counting Functions
-# ---------------------------
+# --- Pricing (USD per 1M tokens) ---
+PRICING = {
+    "claude": {"input_per_m": 3.00, "output_per_m": 15.00},
+    "gemini": {"input_per_m": 1.25, "output_per_m": 10.00},
+}
 
-def count_tokens_claude(prompt_text: str) -> int:
-    """
-    Approximate token count for Claude.
-    Assumes ~1.3 tokens per word.
-    """
-    words = len(prompt_text.split())
-    tokens = int(words * 1.3)
+# USD → EUR conversion rate — adjust as needed
+USD_TO_EUR = 0.92
+
+def count_tokens(text: str) -> int:
+    """Very rough token estimation: assume ~1 token per 0.75 words."""
+    words = len(text.split())
+    tokens = int(words / 0.75)
     return tokens
 
-def count_tokens_gemini(prompt_text: str) -> int:
-    """
-    Approximate token count for Gemini.
-    Assumes ~1.1 tokens per word.
-    """
-    words = len(prompt_text.split())
-    tokens = int(words * 1.1)
-    return tokens
+def estimate_cost(tokens: int, model: str, output_tokens: int = 0):
+    """Estimate cost in EUR, for input + output tokens."""
+    pricing = PRICING.get(model)
+    if pricing is None:
+        return 0.0
+    cost_usd = (tokens / 1_000_000) * pricing["input_per_m"]
+    cost_usd += (output_tokens / 1_000_000) * pricing["output_per_m"]
+    cost_eur = cost_usd * USD_TO_EUR
+    return round(cost_eur, 6)
 
-# ---------------------------
-# Cost Calculation
-# ---------------------------
-
-def calculate_cost(tokens: int, euro_per_token: float) -> float:
-    """Calculate estimated cost in euros."""
-    return round(tokens * euro_per_token, 4)
-
-# ---------------------------
-# Save last calculation
-# ---------------------------
-
-def save_last_calculation(data: dict):
-    """Save last calculation to a local JSON file."""
-    with open("last_calculation.json", "w", encoding="utf-8") as f:
+def save_last(data: dict):
+    with open("last_estimate.json", "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
-# ---------------------------
-# Main TUI Logic
-# ---------------------------
-
 def main():
-    # Step 1: Select models
     models = checkboxlist_dialog(
-        title="Select Models",
-        text="Which model(s) do you want to calculate for?",
-        values=[("claude", "Claude"), ("gemini", "Gemini")],
+        title="Select Model(s)",
+        text="Which model(s) to estimate for?",
+        values=[("claude", "Claude"), ("gemini", "Gemini")]
     ).run()
-
     if not models:
-        message_dialog(title="Error", text="No models selected. Exiting.").run()
+        message_dialog(title="Error", text="No model selected — exiting.").run()
         return
 
-    # Step 2: Get euro-per-token rates
-    euro_rates = {}
-    for model in models:
-        rate = input_dialog(
-            title=f"{model.title()} Euro-per-Token",
-            text=f"Enter euro-per-token rate for {model.title()}:"
-        ).run()
-        try:
-            euro_rates[model] = float(rate)
-        except ValueError:
-            message_dialog(title="Error", text="Invalid rate. Exiting.").run()
-            return
-
-    # Step 3: Get user prompt (multi-line)
     prompt_text = input_dialog(
-        title="Enter Prompt",
+        title="Prompt Text",
         text="Enter your prompt (multi-line allowed):"
     ).run()
-
-    if not prompt_text.strip():
-        message_dialog(title="Error", text="Prompt is empty. Exiting.").run()
+    if not prompt_text or not prompt_text.strip():
+        message_dialog(title="Error", text="Prompt is empty — exiting.").run()
         return
 
-    # Optional: Max response tokens
-    max_response = input_dialog(
-        title="Max Response Tokens",
-        text="Optional: enter expected max tokens for the model response (or leave blank):"
+    # Ask user for expected output size (in tokens) or ratio
+    resp = input_dialog(
+        title="Expected Response Size",
+        text=(
+            "Enter expected OUTPUT token count (integer),\n"
+            "or leave blank to assume output = prompt tokens."
+        )
     ).run()
+
     try:
-        max_response_tokens = int(max_response) if max_response.strip() else 0
-    except ValueError:
-        max_response_tokens = 0
-
-    # Step 4: Calculate tokens and cost
-    results = {}
-    for model in models:
-        if model == "claude":
-            tokens_prompt = count_tokens_claude(prompt_text)
-        elif model == "gemini":
-            tokens_prompt = count_tokens_gemini(prompt_text)
+        if resp and resp.strip():
+            output_tokens = int(resp.strip())
         else:
-            tokens_prompt = 0
+            # default: assume output tokens ≈ prompt tokens
+            output_tokens = None
+    except ValueError:
+        output_tokens = None
 
-        total_tokens = tokens_prompt + max_response_tokens
-        cost = calculate_cost(total_tokens, euro_rates[model])
-        results[model] = {
-            "prompt_tokens": tokens_prompt,
-            "response_tokens": max_response_tokens,
-            "total_tokens": total_tokens,
+    results = {}
+    for m in models:
+        input_tokens = count_tokens(prompt_text)
+        out_tokens = output_tokens if output_tokens is not None else input_tokens
+        cost = estimate_cost(input_tokens, m, out_tokens)
+        results[m] = {
+            "input_tokens": input_tokens,
+            "output_tokens": out_tokens,
             "estimated_cost_eur": cost
         }
 
-    # Step 5: Display results
-    result_text = ""
-    for model, data in results.items():
-        result_text += (
-            f"{model.title()}:\n"
-            f"  Prompt Tokens: {data['prompt_tokens']}\n"
-            f"  Response Tokens: {data['response_tokens']}\n"
-            f"  Total Tokens: {data['total_tokens']}\n"
-            f"  Estimated Cost (€): {data['estimated_cost_eur']}\n\n"
+    display = ""
+    for m, r in results.items():
+        display += (
+            f"{m.title()}:\n"
+            f"  Input Tokens: {r['input_tokens']}\n"
+            f"  Output Tokens: {r['output_tokens']}\n"
+            f"  Estimated Cost (EUR): €{r['estimated_cost_eur']}\n\n"
         )
 
-    message_dialog(title="Estimated Costs", text=result_text.strip()).run()
-
-    # Step 6: Save last calculation
-    save_last_calculation({
+    message_dialog(title="Estimated Cost", text=display.strip()).run()
+    save_last({
         "models": models,
-        "euro_rates": euro_rates,
         "prompt": prompt_text,
-        "max_response_tokens": max_response_tokens,
         "results": results
     })
 
 if __name__ == "__main__":
     main()
+
